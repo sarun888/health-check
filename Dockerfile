@@ -7,13 +7,13 @@ ARG VERSION
 ARG VCS_REF
 
 # Labels for metadata
-LABEL maintainer="devops@company.com" \
+LABEL maintainer="sarun.m@aitechindia.com" \
       org.opencontainers.image.title="ML Model API" \
       org.opencontainers.image.description="Production ML model serving API" \
       org.opencontainers.image.version=${VERSION} \
       org.opencontainers.image.created=${BUILD_DATE} \
       org.opencontainers.image.revision=${VCS_REF} \
-      org.opencontainers.image.source="https://github.com/your-org/ml-model"
+      org.opencontainers.image.source="https://github.com/sarun888/health-check.git"
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
