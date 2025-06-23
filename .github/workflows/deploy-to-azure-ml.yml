@@ -110,6 +110,7 @@ jobs:
           echo "Logging into ACR..."
           echo "Registry: ${{ env.REGISTRY_LOGIN_SERVER }}"
           echo "Image will be: ${{ env.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
+          echo "Note: ACR login would be required for pushing images"
 
       - name: Build Docker image
         id: build
@@ -117,6 +118,7 @@ jobs:
           IMAGE_URI="${{ env.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           echo "Building image: $IMAGE_URI"
           docker build -t $IMAGE_URI .
+          echo "Built Docker image successfully"
           echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
 
   # Deploy to Development
@@ -139,7 +141,12 @@ jobs:
       - name: Install Azure ML dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install azure-ai-ml azure-identity azure-mgmt-ml
+          pip install azure-ai-ml azure-identity azure-core azure-mgmt-resource
+
+      - name: Set up Azure authentication
+        run: |
+          echo "Setting up Azure authentication for development..."
+          echo "Note: This requires manual Azure authentication setup"
 
       - name: Deploy to Azure ML - Development
         id: deploy
@@ -174,7 +181,7 @@ jobs:
       - name: Install Azure ML dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install azure-ai-ml azure-identity azure-mgmt-ml
+          pip install azure-ai-ml azure-identity azure-core azure-mgmt-resource
 
       - name: Deploy to Azure ML - Staging
         id: deploy
@@ -214,7 +221,7 @@ jobs:
       - name: Install Azure ML dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          pip install azure-ai-ml azure-identity azure-mgmt-ml
+          pip install azure-ai-ml azure-identity azure-core azure-mgmt-resource
 
       - name: Deploy to Azure ML - Production
         id: deploy
