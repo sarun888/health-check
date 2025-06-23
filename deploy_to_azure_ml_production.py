@@ -135,11 +135,18 @@ def create_or_update_deployment(client, endpoint_name, config):
             description=f"Container environment for ML Health Check - {config['environment']}",
         )
         
+        # Create code configuration for the containerized app
+        code_config = CodeConfiguration(
+            code=".",  # Use current directory (not needed for container but required)
+            scoring_script="app.py"  # Entry point script name
+        )
+        
         # Create deployment with proper Azure ML SDK objects
         deployment = ManagedOnlineDeployment(
             name=deployment_name,
             endpoint_name=endpoint_name,
             environment=environment,
+            code_configuration=code_config,
             instance_type="Standard_DS3_v2",  # Use recommended instance size
             instance_count=1,
             request_settings=OnlineRequestSettings(
