@@ -48,8 +48,9 @@
     # Set work directory
     WORKDIR /app
     
-    # Copy application code
+    # Copy application code and model
     COPY --chown=appuser:appuser app.py gunicorn_config.py ./
+    COPY --chown=appuser:appuser model.pkl ./models/
     
     # Pre-create necessary folders and fix permissions
     RUN mkdir -p /app/models /app/logs && \

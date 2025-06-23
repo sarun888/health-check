@@ -147,7 +147,7 @@ def create_or_update_deployment(client, endpoint_name, config):
             endpoint_name=endpoint_name,
             environment=environment,
             code_configuration=code_config,
-            instance_type="Standard_DS2_v2",  # Use smaller instance to fit quota
+            instance_type="Standard_F2s_v2",  # Use compute-optimized instance for ML workloads
             instance_count=1,
             request_settings=OnlineRequestSettings(
                 request_timeout_ms=90000,
@@ -155,18 +155,18 @@ def create_or_update_deployment(client, endpoint_name, config):
                 max_queue_wait_ms=500
             ),
             liveness_probe=ProbeSettings(
-                failure_threshold=3,
+                failure_threshold=5,
                 success_threshold=1,
-                timeout=2,
-                period=10,
-                initial_delay=30
+                timeout=5,
+                period=15,
+                initial_delay=60
             ),
             readiness_probe=ProbeSettings(
                 failure_threshold=10,
                 success_threshold=1,
-                timeout=10,
-                period=10,
-                initial_delay=30
+                timeout=15,
+                period=15,
+                initial_delay=60
             )
         )
         
