@@ -56,7 +56,6 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install bandit safety flake8 black isort pytest
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
       - name: Run security scan with Bandit
         run: bandit -r . -f json -o bandit-report.json || true
 
@@ -70,7 +69,6 @@ jobs:
         run: |
           black --check . || echo "Code formatting check completed"
           isort --check-only . || echo "Import sorting check completed"
-
       - name: Upload security scan results
         uses: actions/upload-artifact@v4
         if: always()
@@ -79,7 +77,6 @@ jobs:
           path: |
             bandit-report.json
             safety-report.json
-
   # Unit Tests
   test:
     name: Unit Tests
@@ -99,11 +96,9 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install pytest pytest-cov
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
       - name: Run tests with coverage
         run: |
           pytest tests/ --cov=. --cov-report=xml --cov-report=html --junitxml=pytest-results.xml || echo "Tests completed"
-
       - name: Upload test results
         uses: actions/upload-artifact@v4
         if: always()
@@ -113,7 +108,6 @@ jobs:
             pytest-results.xml
             htmlcov/
             coverage.xml
-
   # Build and Push Container Image
   build-and-push:
     name: Build & Push Container
@@ -157,21 +151,18 @@ jobs:
             
             exit 1
           }
-
       - name: Log in to Azure Container Registry
         run: |
           echo "Logging into ACR: ${{ env.REGISTRY_LOGIN_SERVER }}"
           az acr login --name ${{ env.REGISTRY_NAME }}
-
       - name: Build and Push Docker image
         id: build
         run: |
           IMAGE_URI="${{ env.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           echo "Building and pushing image: $IMAGE_URI"
           
-          # Build with simple Dockerfile for debugging
+          # Build with security scanning
           docker build \
-            --file Dockerfile.simple \
             --tag $IMAGE_URI \
             --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
             --build-arg VCS_REF=${{ github.sha }} \
@@ -189,7 +180,6 @@ jobs:
           fi
           
           echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
-
       - name: Run container vulnerability scan
         run: |
           # Install Trivy for container scanning
@@ -202,7 +192,6 @@ jobs:
           
           # Scan the built image
           trivy image --exit-code 0 --severity HIGH,CRITICAL --format sarif -o trivy-results.sarif ${{ steps.build.outputs.image-uri }}
-
       - name: Upload vulnerability scan results
         uses: actions/upload-artifact@v4
         if: always()
@@ -232,7 +221,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install azure-ai-ml azure-identity azure-core azure-mgmt-resource
-
       # Azure authentication using OIDC
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -246,7 +234,6 @@ jobs:
           echo "Verifying Azure authentication..."
           az account show
           az ml workspace list --resource-group ${{ env.RESOURCE_GROUP_DEV }}
-
       - name: Deploy to Azure ML - Development
         id: deploy
         run: |
@@ -282,7 +269,6 @@ jobs:
           else:
               print('No endpoint URI available for health check')
           "
-
   # Deploy to Staging
   deploy-staging:
     name: Deploy to Staging
@@ -305,7 +291,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install azure-ai-ml azure-identity azure-core azure-mgmt-resource
-
       # Azure authentication using OIDC
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -318,7 +303,7 @@ jobs:
         id: deploy
         run: |
           echo "Deploying to Staging environment..."
-          python deploy_to_azure_ml_production.py
+          python deploy_to_azure_ml.py || python deploy_to_azure_ml_minimal.py
         env:
           SUBSCRIPTION_ID: ${{ env.SUBSCRIPTION_ID }}
           RESOURCE_GROUP: ${{ env.RESOURCE_GROUP_STAGING }}
@@ -333,14 +318,12 @@ jobs:
           if [ -f "tests/integration/test_ml_endpoint.py" ]; then
             python -m pytest tests/integration/ --verbose || echo "Integration tests completed"
           fi
-
       - name: Run smoke tests
         run: |
           echo "Running smoke tests..."
           if [ -f "tests/smoke/test_smoke.py" ]; then
             python -m pytest tests/smoke/ --verbose || echo "Smoke tests completed"
           fi
-
   # Deploy to Production (Manual Approval Required)
   deploy-production:
     name: Deploy to Production
@@ -363,7 +346,6 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install azure-ai-ml azure-identity azure-core azure-mgmt-resource
-
       # Azure authentication using OIDC
       - name: Azure Login (OIDC)
         uses: azure/login@v2
@@ -391,13 +373,11 @@ jobs:
           if [ -f "tests/smoke/test_smoke.py" ]; then
             python -m pytest tests/smoke/ --verbose --environment=production || echo "Production smoke tests completed"
           fi
-
       - name: Update monitoring dashboards
         run: |
           echo "Updating monitoring dashboards..."
           # Add your monitoring update logic here
           # Example: Update Grafana dashboards, Azure Monitor alerts, etc.
-
   # Cleanup old deployments
   cleanup:
     name: Cleanup Old Deployments
@@ -430,7 +410,6 @@ jobs:
               az acr repository delete --name ${{ env.REGISTRY_NAME }} --image ${{ env.IMAGE_NAME }}:$tag --yes || true
             fi
           done
-
       - name: Cleanup old ML endpoints
         run: |
           echo "Cleaning up old ML endpoints..."
