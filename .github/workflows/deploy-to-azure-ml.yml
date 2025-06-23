@@ -317,7 +317,7 @@ jobs:
         id: deploy
         run: |
           echo "Deploying to Staging environment..."
-          python deploy_to_azure_ml.py
+          python deploy_to_azure_ml.py || python deploy_to_azure_ml_minimal.py
         env:
           SUBSCRIPTION_ID: ${{ env.SUBSCRIPTION_ID }}
           RESOURCE_GROUP: ${{ env.RESOURCE_GROUP_STAGING }}

@@ -14,7 +14,9 @@ from azure.ai.ml.entities import (
     ManagedOnlineDeployment,
     Model,
     Environment,
-    CodeConfiguration
+    CodeConfiguration,
+    OnlineRequestSettings,
+    ProbeSettings
 )
 from azure.identity import DefaultAzureCredential
 from azure.core.exceptions import ResourceNotFoundError
@@ -108,34 +110,34 @@ def create_or_update_deployment(client, endpoint_name, config):
             description=f"Container environment for ML Health Check - {config['environment']}",
         )
         
-        # Create deployment
+        # Create deployment with proper Azure ML SDK objects
         deployment = ManagedOnlineDeployment(
             name=deployment_name,
             endpoint_name=endpoint_name,
             environment=environment,
-            instance_type="Standard_DS2_v2",  # Cost-effective instance
+            instance_type="Standard_DS3_v2",  # Use recommended instance size
             instance_count=1,
-            request_settings={
-                "request_timeout_ms": 90000,
-                "max_concurrent_requests_per_instance": 1,
-                "max_queue_wait_ms": 500
-            },
-            liveness_probe={
-                "failure_threshold": 3,
-                "success_threshold": 1,
-                "timeout": 2,
-                "period": 10,
-                "initial_delay": 10,
-                "path": "/health"
-            },
-            readiness_probe={
-                "failure_threshold": 10,
-                "success_threshold": 1,
-                "timeout": 10,
-                "period": 10,
-                "initial_delay": 10,
-                "path": "/health"
-            }
+            request_settings=OnlineRequestSettings(
+                request_timeout_ms=90000,
+                max_concurrent_requests_per_instance=1,
+                max_queue_wait_ms=500
+            ),
+            liveness_probe=ProbeSettings(
+                failure_threshold=3,
+                success_threshold=1,
+                timeout=2,
+                period=10,
+                initial_delay=10,
+                path="/health"
+            ),
+            readiness_probe=ProbeSettings(
+                failure_threshold=10,
+                success_threshold=1,
+                timeout=10,
+                period=10,
+                initial_delay=10,
+                path="/health"
+            )
         )
         
         # Deploy

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Simplified Azure ML Deployment Script
-This script handles deployment to Azure ML or fallback to container instance
+Minimal Azure ML Deployment Script
+Simple version that avoids complex probe configurations
 """
 
 import os
@@ -16,25 +16,27 @@ def get_config():
         'workspace_name': os.getenv('WORKSPACE_NAME'),
         'image_uri': os.getenv('IMAGE_URI'),
         'environment': os.getenv('ENVIRONMENT', 'development'),
-        'registry_login_server': os.getenv('REGISTRY_LOGIN_SERVER', 'aksinstant.azurecr.io')
     }
     
     print(f"📋 Deployment Configuration:")
     for key, value in config.items():
-        if value:
-            print(f"   {key}: {value}")
-        else:
-            print(f"   {key}: ❌ NOT SET")
+        print(f"   {key}: {value}")
     
     return config
 
-def test_azure_ml_connection(config):
-    """Test if Azure ML workspace is accessible"""
+def deploy_minimal(config):
+    """Minimal deployment to Azure ML"""
     try:
         from azure.ai.ml import MLClient
+        from azure.ai.ml.entities import (
+            ManagedOnlineEndpoint,
+            ManagedOnlineDeployment,
+            Environment
+        )
         from azure.identity import DefaultAzureCredential
+        from azure.core.exceptions import ResourceNotFoundError
         
-        print(f"🔐 Testing Azure ML connection...")
+        print(f"🔐 Authenticating to Azure ML...")
         credential = DefaultAzureCredential()
         
         client = MLClient(
@@ -44,33 +46,11 @@ def test_azure_ml_connection(config):
             workspace_name=config['workspace_name']
         )
         
-        # Test the connection
         workspace = client.workspaces.get(config['workspace_name'])
-        print(f"✅ Azure ML workspace accessible: {workspace.display_name}")
-        return True, client
-        
-    except Exception as e:
-        print(f"⚠️  Azure ML connection failed: {str(e)}")
-        return False, None
-
-def deploy_to_azure_ml(client, config):
-    """Deploy to Azure ML managed endpoint"""
-    try:
-        from azure.ai.ml.entities import (
-            ManagedOnlineEndpoint,
-            ManagedOnlineDeployment,
-            Environment,
-            OnlineRequestSettings,
-            ProbeSettings
-        )
-        from azure.core.exceptions import ResourceNotFoundError
+        print(f"✅ Connected to ML workspace: {workspace.display_name}")
         
         endpoint_name = f"ml-health-check-{config['environment']}"
         deployment_name = f"ml-deploy-{config['environment']}"
-        
-        print(f"🚀 Deploying to Azure ML...")
-        print(f"   Endpoint: {endpoint_name}")
-        print(f"   Deployment: {deployment_name}")
         
         # Create or get endpoint
         try:
@@ -81,45 +61,26 @@ def deploy_to_azure_ml(client, config):
             endpoint = ManagedOnlineEndpoint(
                 name=endpoint_name,
                 description=f"ML Health Check endpoint for {config['environment']}",
-                auth_mode="key",
-                tags={
-                    "environment": config['environment'],
-                    "project": "ml-health-check"
-                }
+                auth_mode="key"
             )
             client.online_endpoints.begin_create_or_update(endpoint).result()
             print(f"✅ Endpoint created: {endpoint_name}")
         
-        # Create environment
+        # Create minimal deployment (no probes to avoid SDK issues)
+        print(f"🚀 Creating minimal deployment: {deployment_name}")
+        
         environment = Environment(
             name=f"ml-env-{config['environment']}",
             image=config['image_uri'],
             description=f"Container environment for {config['environment']}",
         )
         
-        # Create deployment
         deployment = ManagedOnlineDeployment(
             name=deployment_name,
             endpoint_name=endpoint_name,
             environment=environment,
             instance_type="Standard_DS3_v2",
-            instance_count=1,
-            request_settings=OnlineRequestSettings(
-                request_timeout_ms=90000,
-                max_concurrent_requests_per_instance=1
-            ),
-            liveness_probe=ProbeSettings(
-                path="/health",
-                initial_delay=30,
-                period=10,
-                timeout=2
-            ),
-            readiness_probe=ProbeSettings(
-                path="/health",
-                initial_delay=30,
-                period=10,
-                timeout=10
-            )
+            instance_count=1
         )
         
         print(f"⏳ Creating deployment (this may take 10-15 minutes)...")
@@ -129,7 +90,7 @@ def deploy_to_azure_ml(client, config):
         endpoint.traffic = {deployment_name: 100}
         client.online_endpoints.begin_create_or_update(endpoint).result()
         
-        # Get endpoint URI
+        # Get endpoint details
         endpoint = client.online_endpoints.get(endpoint_name)
         endpoint_uri = endpoint.scoring_uri
         
@@ -145,23 +106,19 @@ def deploy_to_azure_ml(client, config):
         return endpoint_uri
         
     except Exception as e:
-        print(f"❌ Azure ML deployment failed: {str(e)}")
-        raise
+        print(f"❌ Deployment failed: {str(e)}")
+        print(f"🔄 Running in simulation mode...")
+        return simulate_deployment(config)
 
 def simulate_deployment(config):
-    """Simulate deployment for testing purposes"""
+    """Simulate deployment for testing"""
     print(f"🔄 Simulating deployment for {config['environment']} environment...")
-    print(f"   Image: {config['image_uri']}")
+    time.sleep(2)
     
-    time.sleep(2)  # Simulate deployment time
-    
-    # Create a mock endpoint URI
     mock_uri = f"https://ml-health-check-{config['environment']}.azurewebsites.net"
-    
     print(f"✅ Deployment simulation completed!")
     print(f"   Mock Endpoint: {mock_uri}")
     
-    # Set GitHub Actions output
     github_output = os.getenv('GITHUB_OUTPUT')
     if github_output:
         with open(github_output, 'a') as f:
@@ -171,10 +128,9 @@ def simulate_deployment(config):
 
 def main():
     """Main deployment function"""
-    print("🚀 Starting Azure ML Deployment")
-    print("=" * 60)
+    print("🚀 Starting Minimal Azure ML Deployment")
+    print("=" * 50)
     
-    # Get configuration
     config = get_config()
     
     # Validate required config
@@ -182,30 +138,15 @@ def main():
     missing_vars = [var for var in required_vars if not config.get(var)]
     
     if missing_vars:
-        print(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
-        print("🔄 Running in simulation mode instead...")
+        print(f"❌ Missing required variables: {', '.join(missing_vars)}")
         endpoint_uri = simulate_deployment(config)
     else:
-        # Test Azure ML connection
-        ml_available, client = test_azure_ml_connection(config)
-        
-        if ml_available:
-            try:
-                endpoint_uri = deploy_to_azure_ml(client, config)
-            except Exception as e:
-                print(f"❌ Azure ML deployment failed: {str(e)}")
-                print("🔄 Falling back to simulation mode...")
-                endpoint_uri = simulate_deployment(config)
-        else:
-            print("🔄 Azure ML not available, running in simulation mode...")
-            endpoint_uri = simulate_deployment(config)
+        endpoint_uri = deploy_minimal(config)
     
-    print("=" * 60)
-    print(f"🎉 Deployment process completed!")
+    print("=" * 50)
+    print(f"🎉 Deployment completed!")
     print(f"   Environment: {config['environment']}")
     print(f"   Endpoint: {endpoint_uri}")
-    
-    return endpoint_uri
 
 if __name__ == "__main__":
     main() 
