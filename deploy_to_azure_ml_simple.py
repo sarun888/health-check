@@ -64,7 +64,7 @@ def deploy_to_azure_ml(client, config):
         from azure.core.exceptions import ResourceNotFoundError
         
         endpoint_name = f"ml-health-check-{config['environment']}"
-        deployment_name = f"ml-health-check-deployment-{config['environment']}"
+        deployment_name = f"ml-deploy-{config['environment']}"
         
         print(f"🚀 Deploying to Azure ML...")
         print(f"   Endpoint: {endpoint_name}")
@@ -90,7 +90,7 @@ def deploy_to_azure_ml(client, config):
         
         # Create environment
         environment = Environment(
-            name=f"ml-health-check-env-{config['environment']}",
+            name=f"ml-env-{config['environment']}",
             image=config['image_uri'],
             description=f"Container environment for {config['environment']}",
         )

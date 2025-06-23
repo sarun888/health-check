@@ -96,14 +96,14 @@ def create_or_update_endpoint(client, config):
 
 def create_or_update_deployment(client, endpoint_name, config):
     """Create or update the deployment"""
-    deployment_name = f"ml-health-check-deployment-{config['environment']}"
+    deployment_name = f"ml-deploy-{config['environment']}"
     
     try:
         print(f"🚀 Creating/updating deployment: {deployment_name}")
         
         # Create environment from container image
         environment = Environment(
-            name=f"ml-health-check-env-{config['environment']}",
+            name=f"ml-env-{config['environment']}",
             image=config['image_uri'],
             description=f"Container environment for ML Health Check - {config['environment']}",
         )
