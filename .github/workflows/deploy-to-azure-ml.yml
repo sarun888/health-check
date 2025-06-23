@@ -169,8 +169,9 @@ jobs:
           IMAGE_URI="${{ env.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           echo "Building and pushing image: $IMAGE_URI"
           
-          # Build with security scanning
+          # Build with simple Dockerfile for debugging
           docker build \
+            --file Dockerfile.simple \
             --tag $IMAGE_URI \
             --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
             --build-arg VCS_REF=${{ github.sha }} \

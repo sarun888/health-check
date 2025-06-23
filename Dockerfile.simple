@@ -1,0 +1,31 @@
+# Simple working Dockerfile for Azure ML
+FROM python:3.11-slim
+
+# Install Flask only
+RUN pip install --no-cache-dir flask gunicorn
+
+# Create app directory
+WORKDIR /app
+
+# Copy simple app
+COPY app_simple.py ./app.py
+
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
+RUN chown -R appuser:appuser /app
+USER appuser
+
+# Expose port
+EXPOSE 5001
+ENV PORT=5001
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:5001/health || exit 1
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Start with gunicorn
+CMD ["gunicorn", "--bind", "0.0.0.0:5001", "--timeout", "120", "--workers", "1", "app:app"] 
