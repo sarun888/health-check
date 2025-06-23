@@ -12,9 +12,7 @@ from azure.ai.ml import MLClient
 from azure.ai.ml.entities import (
     ManagedOnlineEndpoint,
     ManagedOnlineDeployment,
-    Model,
     Environment,
-    CodeConfiguration,
     OnlineRequestSettings,
     ProbeSettings
 )
@@ -22,100 +20,75 @@ from azure.identity import DefaultAzureCredential
 from azure.core.exceptions import ResourceNotFoundError
 
 def get_config():
-    """Get configuration from environment variables"""
     config = {
-        'subscription_id': os.getenv('SUBSCRIPTION_ID'),
-        'resource_group': os.getenv('RESOURCE_GROUP'),
-        'workspace_name': os.getenv('WORKSPACE_NAME'),
-        'image_uri': os.getenv('IMAGE_URI'),
+        'subscription_id': os.getenv('SUBSCRIPTION_ID' ,'6ab08646-8f78-4187-ac87-c762aa843c9b'),
+        'resource_group': os.getenv('RESOURCE_GROUP' ,'mlmodel'),
+        'workspace_name': os.getenv('WORKSPACE_NAME' ,'samplemodel'),
+        'image_uri': os.getenv('IMAGE_URI' ,'aksinstant.azurecr.io/ml-health-check:latest'),
         'environment': os.getenv('ENVIRONMENT', 'development'),
-        'registry_login_server': os.getenv('REGISTRY_LOGIN_SERVER', 'aksinstant.azurecr.io')
+        'registry_login_server': os.getenv('REGISTRY_LOGIN_SERVER')
     }
-    
-    # Validate required configuration
     missing_vars = [k for k, v in config.items() if not v]
     if missing_vars:
-        print(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
+        print(f"❌ Missing required env vars: {', '.join(missing_vars)}")
         sys.exit(1)
-    
     return config
 
 def create_ml_client(config):
-    """Create Azure ML client with proper authentication"""
     try:
-        print(f"🔐 Authenticating to Azure ML...")
+        print("🔐 Authenticating to Azure ML...")
         credential = DefaultAzureCredential()
-        
         client = MLClient(
-            credential=credential,
+            credential,
             subscription_id=config['subscription_id'],
             resource_group_name=config['resource_group'],
             workspace_name=config['workspace_name']
         )
-        
-        # Test the connection
-        workspace = client.workspaces.get(config['workspace_name'])
-        print(f"✅ Connected to ML workspace: {workspace.display_name}")
-        
+        print(f"✅ Connected to workspace: {client.workspaces.get(config['workspace_name']).name}")
         return client
-        
     except Exception as e:
-        print(f"❌ Failed to create ML client: {str(e)}")
+        print(f"❌ Auth failure: {str(e)}")
         sys.exit(1)
 
 def create_or_update_endpoint(client, config):
-    """Create or update the managed online endpoint"""
     endpoint_name = f"ml-health-check-{config['environment']}"
-    
     try:
-        # Check if endpoint exists
         try:
-            endpoint = client.online_endpoints.get(endpoint_name)
-            print(f"✅ Endpoint {endpoint_name} already exists")
+            _ = client.online_endpoints.get(endpoint_name)
+            print(f"✅ Endpoint exists: {endpoint_name}")
         except ResourceNotFoundError:
-            print(f"📝 Creating new endpoint: {endpoint_name}")
-            
-            # Create endpoint
+            print(f"📝 Creating endpoint: {endpoint_name}")
             endpoint = ManagedOnlineEndpoint(
                 name=endpoint_name,
-                description=f"ML Health Check endpoint for {config['environment']} environment",
+                description=f"ML Health Check for {config['environment']}",
                 auth_mode="key",
                 tags={
-                    "environment": config['environment'],
+                    "env": config['environment'],
                     "project": "ml-health-check",
                     "managed_by": "github-actions"
                 }
             )
-            
             client.online_endpoints.begin_create_or_update(endpoint).result()
-            print(f"✅ Endpoint {endpoint_name} created successfully")
-        
+            print(f"✅ Created endpoint: {endpoint_name}")
         return endpoint_name
-        
     except Exception as e:
-        print(f"❌ Failed to create/update endpoint: {str(e)}")
+        print(f"❌ Endpoint error: {str(e)}")
         sys.exit(1)
 
 def create_or_update_deployment(client, endpoint_name, config):
-    """Create or update the deployment"""
     deployment_name = f"ml-deploy-{config['environment']}"
-    
     try:
-        print(f"🚀 Creating/updating deployment: {deployment_name}")
-        
-        # Create environment from container image
-        environment = Environment(
+        print(f"🚀 Deploying: {deployment_name}")
+        env = Environment(
             name=f"ml-env-{config['environment']}",
             image=config['image_uri'],
-            description=f"Container environment for ML Health Check - {config['environment']}",
+            description=f"Env from image {config['image_uri']}"
         )
-        
-        # Create deployment with proper Azure ML SDK objects
         deployment = ManagedOnlineDeployment(
             name=deployment_name,
             endpoint_name=endpoint_name,
-            environment=environment,
-            instance_type="Standard_DS3_v2",  # Use recommended instance size
+            environment=env,
+            instance_type="Standard_DS3_v2",
             instance_count=1,
             request_settings=OnlineRequestSettings(
                 request_timeout_ms=90000,
@@ -139,117 +112,81 @@ def create_or_update_deployment(client, endpoint_name, config):
                 path="/health"
             )
         )
-        
-        # Deploy
         client.online_deployments.begin_create_or_update(deployment).result()
-        print(f"✅ Deployment {deployment_name} completed successfully")
-        
-        # Set traffic to 100% for this deployment
+        print(f"✅ Deployment complete: {deployment_name}")
+
         endpoint = client.online_endpoints.get(endpoint_name)
         endpoint.traffic = {deployment_name: 100}
         client.online_endpoints.begin_create_or_update(endpoint).result()
-        print(f"✅ Traffic routed to deployment: {deployment_name}")
-        
+        print(f"✅ Traffic routed to: {deployment_name}")
         return deployment_name
-        
     except Exception as e:
-        print(f"❌ Failed to create/update deployment: {str(e)}")
+        print(f"❌ Deployment error: {str(e)}")
         sys.exit(1)
 
-def get_endpoint_details(client, endpoint_name, config):
-    """Get endpoint details and set output for GitHub Actions"""
+def get_endpoint_details(client, endpoint_name):
     try:
         endpoint = client.online_endpoints.get(endpoint_name)
-        endpoint_uri = endpoint.scoring_uri
-        
-        print(f"🌐 Endpoint Details:")
+        uri = endpoint.scoring_uri
+        print("🌐 Endpoint details:")
         print(f"   Name: {endpoint_name}")
-        print(f"   URI: {endpoint_uri}")
+        print(f"   URI: {uri}")
         print(f"   Status: {endpoint.provisioning_state}")
-        
-        # Set GitHub Actions output
-        github_output = os.getenv('GITHUB_OUTPUT')
+
+        github_output = os.getenv("GITHUB_OUTPUT")
         if github_output:
-            with open(github_output, 'a') as f:
-                f.write(f"endpoint-uri={endpoint_uri}\n")
+            with open(github_output, "a") as f:
+                f.write(f"endpoint-uri={uri}\n")
                 f.write(f"endpoint-name={endpoint_name}\n")
-        
-        # Set environment variable for health check
-        os.environ['ENDPOINT_URI'] = endpoint_uri
-        
-        return endpoint_uri
-        
+        os.environ["ENDPOINT_URI"] = uri
+        return uri
     except Exception as e:
-        print(f"❌ Failed to get endpoint details: {str(e)}")
+        print(f"❌ Failed to get endpoint: {str(e)}")
         return None
 
-def test_endpoint(endpoint_uri):
-    """Test the deployed endpoint"""
-    if not endpoint_uri:
-        print("⚠️  No endpoint URI available for testing")
+def test_endpoint(uri):
+    if not uri:
+        print("⚠️  No URI found for testing")
         return
-    
     try:
         import requests
         import time
-        
-        print(f"🧪 Testing endpoint: {endpoint_uri}")
-        
-        # Wait for endpoint to be ready
-        print("⏳ Waiting for endpoint to be ready...")
+
+        print(f"⏳ Waiting 30s for endpoint to stabilize...")
         time.sleep(30)
-        
-        # Test health endpoint
-        health_url = endpoint_uri.replace('/score', '/health') if '/score' in endpoint_uri else f"{endpoint_uri}/health"
-        
-        response = requests.get(health_url, timeout=30)
-        
-        if response.status_code == 200:
-            print(f"✅ Health check passed: {response.status_code}")
-            print(f"   Response: {response.text}")
-        else:
-            print(f"⚠️  Health check returned: {response.status_code}")
-            print(f"   Response: {response.text}")
-            
+
+        # Test health
+        health_resp = requests.get(f"{uri}/health", timeout=30)
+        print(f"✅ Health: {health_resp.status_code}")
+        print(health_resp.text)
+
+        # Optional: Test scoring (POST)
+        try:
+            score_payload = {"inputs": [[5.1, 3.5, 1.4, 0.2]]}  # example for iris
+            score_resp = requests.post(f"{uri}/score", json=score_payload, timeout=30)
+            print(f"✅ Score status: {score_resp.status_code}")
+            print(f"Response: {score_resp.text}")
+        except Exception as e:
+            print(f"⚠️  /score test failed: {str(e)}")
+
     except Exception as e:
-        print(f"⚠️  Endpoint test failed: {str(e)}")
-        print("   This is normal for new deployments - the endpoint may still be starting up")
+        print(f"⚠️  Endpoint unreachable: {str(e)}")
 
 def main():
-    """Main deployment function"""
     print("🚀 Starting Azure ML Deployment")
     print("=" * 50)
-    
-    # Get configuration
+
     config = get_config()
-    
-    print(f"📋 Deployment Configuration:")
-    print(f"   Environment: {config['environment']}")
-    print(f"   Workspace: {config['workspace_name']}")
-    print(f"   Resource Group: {config['resource_group']}")
-    print(f"   Image: {config['image_uri']}")
-    print("")
-    
-    # Create ML client
     client = create_ml_client(config)
-    
-    # Create or update endpoint
     endpoint_name = create_or_update_endpoint(client, config)
-    
-    # Create or update deployment
-    deployment_name = create_or_update_deployment(client, endpoint_name, config)
-    
-    # Get endpoint details
-    endpoint_uri = get_endpoint_details(client, endpoint_name, config)
-    
-    # Test the endpoint
-    test_endpoint(endpoint_uri)
-    
+    _ = create_or_update_deployment(client, endpoint_name, config)
+    uri = get_endpoint_details(client, endpoint_name)
+    test_endpoint(uri)
+
     print("=" * 50)
-    print(f"🎉 Deployment completed successfully!")
-    print(f"   Endpoint: {endpoint_name}")
-    print(f"   URI: {endpoint_uri}")
-    print(f"   Environment: {config['environment']}")
+    print(f"🎉 Deployment complete!")
+    print(f"Endpoint URI: {uri}")
+    print(f"Environment: {config['environment']}")
 
 if __name__ == "__main__":
-    main() 
+    main()
