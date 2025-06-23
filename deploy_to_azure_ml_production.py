@@ -152,16 +152,14 @@ def create_or_update_deployment(client, endpoint_name, config):
                 success_threshold=1,
                 timeout=2,
                 period=10,
-                initial_delay=30,  # Give more time for startup
-                path="/health"
+                initial_delay=30
             ),
             readiness_probe=ProbeSettings(
                 failure_threshold=10,
                 success_threshold=1,
                 timeout=10,
                 period=10,
-                initial_delay=30,  # Give more time for startup
-                path="/health"
+                initial_delay=30
             )
         )
         
