@@ -147,7 +147,7 @@ def create_or_update_deployment(client, endpoint_name, config):
             endpoint_name=endpoint_name,
             environment=environment,
             code_configuration=code_config,
-            instance_type="Standard_DS3_v2",  # Use recommended instance size
+            instance_type="Standard_DS2_v2",  # Use smaller instance to fit quota
             instance_count=1,
             request_settings=OnlineRequestSettings(
                 request_timeout_ms=90000,
