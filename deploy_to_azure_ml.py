@@ -16,8 +16,8 @@ from azure.ai.ml.entities import (
     CodeConfiguration,
     Environment
 )
-from azure.identity import DefaultAzureCredential
-from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
+from azure.identity import DefaultAzureCredential, ClientSecretCredential, AzureCliCredential
+from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError, ClientAuthenticationError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -52,6 +52,69 @@ STATIC_CONFIG = {
         "IMAGE_URI": "aksinstant.azurecr.io/ml-health-check:latest"
     }
 }
+
+def get_azure_credential():
+    """
+    Get Azure credential with multiple fallback methods for different environments.
+    Priority:
+    1. Service Principal (CI/CD)
+    2. Azure CLI (local development)
+    3. Default Azure Credential (managed identity, etc.)
+    """
+    credential = None
+    auth_method = "Unknown"
+    
+    try:
+        # Method 1: Service Principal authentication (for CI/CD)
+        client_id = os.environ.get("AZURE_CLIENT_ID")
+        client_secret = os.environ.get("AZURE_CLIENT_SECRET")
+        tenant_id = os.environ.get("AZURE_TENANT_ID")
+        
+        if client_id and client_secret and tenant_id:
+            logger.info("Using Service Principal authentication")
+            credential = ClientSecretCredential(
+                tenant_id=tenant_id,
+                client_id=client_id,
+                client_secret=client_secret
+            )
+            auth_method = "Service Principal"
+        
+        # Method 2: Azure CLI authentication (for local development)
+        elif not os.environ.get("GITHUB_ACTIONS"):
+            logger.info("Attempting Azure CLI authentication")
+            try:
+                credential = AzureCliCredential()
+                # Test the credential
+                token = credential.get_token("https://management.azure.com/.default")
+                auth_method = "Azure CLI"
+                logger.info("Azure CLI authentication successful")
+            except Exception as cli_error:
+                logger.warning(f"Azure CLI authentication failed: {cli_error}")
+                credential = None
+        
+        # Method 3: Default Azure Credential (fallback)
+        if credential is None:
+            logger.info("Using DefaultAzureCredential")
+            credential = DefaultAzureCredential(
+                exclude_environment_credential=False,
+                exclude_managed_identity_credential=False,
+                exclude_shared_token_cache_credential=True,
+                exclude_visual_studio_code_credential=True,
+                exclude_azure_cli_credential=False,
+                exclude_azure_powershell_credential=True,
+                exclude_interactive_browser_credential=True
+            )
+            auth_method = "Default Azure Credential"
+            
+    except Exception as e:
+        logger.error(f"Error setting up Azure credential: {e}")
+        raise
+    
+    if credential is None:
+        raise Exception("No valid Azure credential could be obtained")
+    
+    logger.info(f"Authentication method: {auth_method}")
+    return credential, auth_method
 
 def get_environment_config():
     """Get environment-specific configuration"""
@@ -125,32 +188,55 @@ def get_static_config():
     return config
 
 def create_ml_client(config):
-    """Create and return ML Client"""
+    """Create and return ML Client with improved authentication handling"""
     logger.info(f"Connecting to Azure ML workspace: {config['WORKSPACE_NAME']}")
     
-    credential = DefaultAzureCredential()
-    ml_client = MLClient(
-        credential=credential,
-        subscription_id=config["SUBSCRIPTION_ID"],
-        resource_group_name=config["RESOURCE_GROUP"],
-        workspace_name=config["WORKSPACE_NAME"]
-    )
-    
-    # Validate connection
     try:
-        workspace = ml_client.workspaces.get(config["WORKSPACE_NAME"])
-        logger.info(f"Successfully connected to workspace: {workspace.name}")
+        credential, auth_method = get_azure_credential()
     except Exception as e:
-        logger.error(f"Failed to connect to workspace: {str(e)}")
-        logger.error("Make sure to update the STATIC_CONFIG in deploy_to_azure_ml.py with your actual Azure values")
-        logger.error("For CI/CD: Ensure Azure authentication is set up (az login or service principal)")
-        # In CI/CD environments, we might want to continue with a warning rather than exit
+        logger.error(f"Failed to get Azure credential: {e}")
         if os.environ.get("GITHUB_ACTIONS"):
-            logger.warning("Running in GitHub Actions - workspace validation skipped")
-            return ml_client
+            logger.error("In GitHub Actions - ensure AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, and AZURE_TENANT_ID secrets are configured")
+            logger.error("Also ensure the Azure App Registration has appropriate permissions for ML workspace access")
+        else:
+            logger.error("For local development, run 'az login' to authenticate")
         sys.exit(1)
     
-    return ml_client
+    try:
+        ml_client = MLClient(
+            credential=credential,
+            subscription_id=config["SUBSCRIPTION_ID"],
+            resource_group_name=config["RESOURCE_GROUP"],
+            workspace_name=config["WORKSPACE_NAME"]
+        )
+        
+        # Validate connection with retry logic
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                workspace = ml_client.workspaces.get(config["WORKSPACE_NAME"])
+                logger.info(f"Successfully connected to workspace: {workspace.name} using {auth_method}")
+                return ml_client
+            except ClientAuthenticationError as auth_error:
+                logger.error(f"Authentication failed (attempt {attempt + 1}/{max_retries}): {auth_error}")
+                if attempt == max_retries - 1:
+                    raise
+            except Exception as e:
+                logger.warning(f"Connection attempt {attempt + 1}/{max_retries} failed: {e}")
+                if attempt == max_retries - 1:
+                    logger.error(f"Failed to connect to workspace after {max_retries} attempts: {e}")
+                    logger.error("Make sure to update the STATIC_CONFIG in deploy_to_azure_ml.py with your actual Azure values")
+                    logger.error("Verify that the service principal has the required permissions:")
+                    logger.error("- Contributor or Machine Learning Operator on the ML workspace")
+                    logger.error("- Reader access on the resource group")
+                    if os.environ.get("GITHUB_ACTIONS"):
+                        logger.warning("Running in GitHub Actions - some workspace validation errors may be expected")
+                        return ml_client
+                    raise
+                
+    except Exception as e:
+        logger.error(f"Failed to create ML Client: {e}")
+        raise
 
 def create_or_update_endpoint(ml_client, endpoint_name, env_config):
     """Create or update managed online endpoint"""

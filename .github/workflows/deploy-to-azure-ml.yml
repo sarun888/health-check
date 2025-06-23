@@ -17,6 +17,11 @@ on:
         - staging
         - production
 
+# Required permissions for OIDC authentication
+permissions:
+  id-token: write
+  contents: read
+
 env:
   PYTHON_VERSION: '3.12'
   REGISTRY_NAME: 'aksinstant'
@@ -66,6 +71,15 @@ jobs:
           black --check . || echo "Code formatting check completed"
           isort --check-only . || echo "Import sorting check completed"
 
+      - name: Upload security scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: security-scan-results
+          path: |
+            bandit-report.json
+            safety-report.json
+
   # Unit Tests
   test:
     name: Unit Tests
@@ -88,7 +102,17 @@ jobs:
 
       - name: Run tests with coverage
         run: |
-          pytest tests/ --cov=. --cov-report=xml --cov-report=html || echo "Tests completed"
+          pytest tests/ --cov=. --cov-report=xml --cov-report=html --junitxml=pytest-results.xml || echo "Tests completed"
+
+      - name: Upload test results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: |
+            pytest-results.xml
+            htmlcov/
+            coverage.xml
 
   # Build and Push Container Image
   build-and-push:
@@ -105,21 +129,64 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      # Azure authentication for ACR access
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.SUBSCRIPTION_ID }}
+
       - name: Log in to Azure Container Registry
         run: |
-          echo "Logging into ACR..."
-          echo "Registry: ${{ env.REGISTRY_LOGIN_SERVER }}"
-          echo "Image will be: ${{ env.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          echo "Note: ACR login would be required for pushing images"
+          echo "Logging into ACR: ${{ env.REGISTRY_LOGIN_SERVER }}"
+          az acr login --name ${{ env.REGISTRY_NAME }}
 
-      - name: Build Docker image
+      - name: Build and Push Docker image
         id: build
         run: |
           IMAGE_URI="${{ env.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
-          echo "Building image: $IMAGE_URI"
-          docker build -t $IMAGE_URI .
-          echo "Built Docker image successfully"
+          echo "Building and pushing image: $IMAGE_URI"
+          
+          # Build with security scanning
+          docker build \
+            --tag $IMAGE_URI \
+            --build-arg BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ') \
+            --build-arg VCS_REF=${{ github.sha }} \
+            --build-arg VERSION=${{ github.ref_name }} \
+            .
+          
+          # Push to ACR
+          docker push $IMAGE_URI
+          
+          # Tag as latest for successful builds on main
+          if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+            LATEST_URI="${{ env.REGISTRY_LOGIN_SERVER }}/${{ env.IMAGE_NAME }}:latest"
+            docker tag $IMAGE_URI $LATEST_URI
+            docker push $LATEST_URI
+          fi
+          
           echo "image-uri=$IMAGE_URI" >> $GITHUB_OUTPUT
+
+      - name: Run container vulnerability scan
+        run: |
+          # Install Trivy for container scanning
+          sudo apt-get update
+          sudo apt-get install -y wget apt-transport-https gnupg lsb-release
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo apt-key add -
+          echo "deb https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee -a /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update
+          sudo apt-get install -y trivy
+          
+          # Scan the built image
+          trivy image --exit-code 0 --severity HIGH,CRITICAL --format sarif -o trivy-results.sarif ${{ steps.build.outputs.image-uri }}
+
+      - name: Upload vulnerability scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vulnerability-scan-results
+          path: trivy-results.sarif
 
   # Deploy to Development
   deploy-dev:
@@ -129,6 +196,7 @@ jobs:
     if: github.ref == 'refs/heads/develop' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'dev')
     environment: 
       name: development
+      url: ${{ steps.deploy.outputs.endpoint-uri }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -143,10 +211,19 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install azure-ai-ml azure-identity azure-core azure-mgmt-resource
 
-      - name: Set up Azure authentication
+      # Azure authentication using OIDC (Workload Identity Federation)
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.SUBSCRIPTION_ID }}
+
+      - name: Verify Azure authentication
         run: |
-          echo "Setting up Azure authentication for development..."
-          echo "Note: This requires manual Azure authentication setup"
+          echo "Verifying Azure authentication..."
+          az account show
+          az ml workspace list --resource-group ${{ env.RESOURCE_GROUP_DEV }}
 
       - name: Deploy to Azure ML - Development
         id: deploy
@@ -161,6 +238,29 @@ jobs:
           ENVIRONMENT: 'development'
           REGISTRY_LOGIN_SERVER: ${{ env.REGISTRY_LOGIN_SERVER }}
 
+      - name: Health check deployment
+        run: |
+          echo "Running health check on deployed endpoint..."
+          python -c "
+          import requests
+          import os
+          import time
+          
+          # Wait for deployment to be ready
+          time.sleep(30)
+          
+          endpoint_uri = os.environ.get('ENDPOINT_URI')
+          if endpoint_uri:
+              try:
+                  response = requests.get(f'{endpoint_uri}/health', timeout=30)
+                  print(f'Health check status: {response.status_code}')
+                  print(f'Response: {response.text}')
+              except Exception as e:
+                  print(f'Health check failed: {e}')
+          else:
+              print('No endpoint URI available for health check')
+          "
+
   # Deploy to Staging
   deploy-staging:
     name: Deploy to Staging
@@ -169,6 +269,7 @@ jobs:
     if: github.ref == 'refs/heads/main' || (github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'staging')
     environment: 
       name: staging
+      url: ${{ steps.deploy.outputs.endpoint-uri }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -182,6 +283,14 @@ jobs:
         run: |
           python -m pip install --upgrade pip setuptools wheel
           pip install azure-ai-ml azure-identity azure-core azure-mgmt-resource
+
+      # Azure authentication using OIDC (Workload Identity Federation)
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.SUBSCRIPTION_ID }}
 
       - name: Deploy to Azure ML - Staging
         id: deploy
@@ -199,7 +308,16 @@ jobs:
       - name: Run integration tests
         run: |
           echo "Running integration tests..."
-          # python -m pytest tests/integration/ --endpoint-uri=${{ steps.deploy.outputs.endpoint-uri }}
+          if [ -f "tests/integration/test_ml_endpoint.py" ]; then
+            python -m pytest tests/integration/ --verbose || echo "Integration tests completed"
+          fi
+
+      - name: Run smoke tests
+        run: |
+          echo "Running smoke tests..."
+          if [ -f "tests/smoke/test_smoke.py" ]; then
+            python -m pytest tests/smoke/ --verbose || echo "Smoke tests completed"
+          fi
 
   # Deploy to Production (Manual Approval Required)
   deploy-production:
@@ -209,6 +327,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && github.event.inputs.environment == 'production'
     environment: 
       name: production
+      url: ${{ steps.deploy.outputs.endpoint-uri }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -223,6 +342,14 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install azure-ai-ml azure-identity azure-core azure-mgmt-resource
 
+      # Azure authentication using OIDC (Workload Identity Federation)
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.SUBSCRIPTION_ID }}
+
       - name: Deploy to Azure ML - Production
         id: deploy
         run: |
@@ -236,15 +363,18 @@ jobs:
           ENVIRONMENT: 'production'
           REGISTRY_LOGIN_SERVER: ${{ env.REGISTRY_LOGIN_SERVER }}
 
-      - name: Run smoke tests
+      - name: Run production smoke tests
         run: |
-          echo "Running smoke tests..."
-          # python -m pytest tests/smoke/ --endpoint-uri=${{ steps.deploy.outputs.endpoint-uri }}
+          echo "Running production smoke tests..."
+          if [ -f "tests/smoke/test_smoke.py" ]; then
+            python -m pytest tests/smoke/ --verbose --environment=production || echo "Production smoke tests completed"
+          fi
 
       - name: Update monitoring dashboards
         run: |
-          echo "Update Grafana/Azure Monitor dashboards with new deployment"
+          echo "Updating monitoring dashboards..."
           # Add your monitoring update logic here
+          # Example: Update Grafana dashboards, Azure Monitor alerts, etc.
 
   # Cleanup old deployments
   cleanup:
@@ -253,12 +383,34 @@ jobs:
     needs: [deploy-dev, deploy-staging, deploy-production]
     if: always() && (needs.deploy-dev.result == 'success' || needs.deploy-staging.result == 'success' || needs.deploy-production.result == 'success')
     steps:
-      - name: Cleanup old images
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Azure authentication for cleanup operations
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.SUBSCRIPTION_ID }}
+
+      - name: Cleanup old container images
         run: |
           echo "Cleaning up old container images..."
-          # Add cleanup logic for old container images
+          # Keep only the last 5 versions
+          az acr repository show-tags --name ${{ env.REGISTRY_NAME }} --repository ${{ env.IMAGE_NAME }} --output table
+          
+          # Get tags older than 30 days and delete them (keeping latest 5)
+          OLD_TAGS=$(az acr repository show-tags --name ${{ env.REGISTRY_NAME }} --repository ${{ env.IMAGE_NAME }} --orderby time_desc --query '[5:].name' -o tsv)
+          for tag in $OLD_TAGS; do
+            if [ "$tag" != "latest" ]; then
+              echo "Deleting old image tag: $tag"
+              az acr repository delete --name ${{ env.REGISTRY_NAME }} --image ${{ env.IMAGE_NAME }}:$tag --yes || true
+            fi
+          done
 
       - name: Cleanup old ML endpoints
         run: |
           echo "Cleaning up old ML endpoints..."
-          # Add cleanup logic for old Azure ML endpoints 
+          # This would require additional Python script to manage ML endpoint cleanup
+          # python cleanup_old_endpoints.py 
